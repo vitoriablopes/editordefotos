@@ -153,6 +153,15 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
         <div class="shapes" id="shapes"></div>
         <div class="grp" id="shapeParams"></div>
         <p class="hint">Tudo que fica fora do formato vira transparente no PNG.</p>
+        <div class="sep"></div>
+        <span class="lbl">Girar e redimensionar a borda</span>
+        <div data-slider="shRot" data-label="Girar borda" data-min="-180" data-max="180" data-step="1" data-unit="°"></div>
+        <div data-slider="shSize" data-label="Tamanho" data-min="10" data-max="200" data-step="1" data-unit="%"></div>
+        <div data-slider="shW" data-label="Largura" data-min="10" data-max="200" data-step="1" data-unit="%"></div>
+        <div data-slider="shH" data-label="Altura" data-min="10" data-max="200" data-step="1" data-unit="%"></div>
+        <div data-slider="bx" data-label="Posição horizontal" data-min="-50" data-max="50" data-step="0.5" data-unit="%"></div>
+        <div data-slider="by" data-label="Posição vertical" data-min="-50" data-max="50" data-step="0.5" data-unit="%"></div>
+        <button class="btn small ghost" data-act="resetShapeTf">Zerar rotação e tamanho da borda</button>
       </div>
     </details>
 
@@ -303,7 +312,9 @@ const DEF = {
   aspect:'orig', rot:0, flipH:false, flipV:false, angle:0, zoom:100, ox:0, oy:0,
   shape:'rounded', seed:7,
   sp:{radius:20, sq:4, irr:22, pts:7, uniform:true, archH:100, leafR:60, leafFlip:false,
-      sides:6, corner:10, prot:0, spikes:5, inner:50, waves:14, depth:8},
+      sides:6, corner:10, prot:0, spikes:5, inner:50, waves:14, depth:8, smooth:100, showPts:true},
+  custom: defaultCustom(6),
+  shRot:0, shSize:100, shW:100, shH:100, bx:0, by:0,
   ovOn:false, ovType:'solid', ovColor:'#e8590c', ovColor2:'#3b5bdb', ovFade:false, ovAngle:90, ovOp:35, ovMode:'source-over',
   bright:100, contrast:100, sat:100, hue:0, blur:0, gray:0, sepia:0, vig:0,
   strokeOn:false, strokeW:1.5, strokeColor:'#ffffff',
@@ -322,6 +333,11 @@ try {
     }
   }
 } catch (e) {}
+if (!Array.isArray(st.custom) || st.custom.length < 3 ||
+    !st.custom.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))) st.custom = clone(DEF.custom);
+
+function defaultCustom(n){ const o = [];
+  for (let i = 0; i < n; i++){ const a = -Math.PI/2 + i*2*Math.PI/n; o.push([.5 + .42*Math.cos(a), .5 + .42*Math.sin(a)]); } return o; }
 
 const getP = (path, o = st) => path.split('.').reduce((a, k) => a == null ? a : a[k], o);
 const setP = (path, v) => { const ks = path.split('.'); const last = ks.pop(); ks.reduce((a, k) => a[k], st)[last] = v; };
@@ -350,7 +366,45 @@ const SHAPES = [
   {id:'star', name:'Estrela', p:[['spikes','Pontas',3,24,1,''],['inner','Raio interno',10,95,1,'%'],['corner','Suavizar cantos',0,100,1,'%'],['prot','Rotação',0,360,1,'°'],['uniform','Manter proporção','check']]},
   {id:'heart', name:'Coração', p:[['uniform','Manter proporção','check']]},
   {id:'flower', name:'Ondulado', p:[['waves','Ondas',3,48,1,''],['depth','Profundidade',1,40,1,'%'],['uniform','Manter proporção','check']]},
+  {id:'custom', name:'Livre', custom:true, p:[['smooth','Suavização da curva',0,100,1,'%'],['showPts','Mostrar pontos de controle','check']]},
 ];
+
+/* spline fechada (Catmull-Rom → Bézier); smooth 0 = linhas retas, 1 = curva totalmente suave */
+function splineSegs(P, sm){
+  const n = P.length, segs = [];
+  for (let i = 0; i < n; i++){
+    const p0 = P[(i-1+n)%n], p1 = P[i], p2 = P[(i+1)%n], p3 = P[(i+2)%n];
+    segs.push([p1, [p1[0] + (p2[0]-p0[0])*sm/6, p1[1] + (p2[1]-p0[1])*sm/6], [p2[0] - (p3[0]-p1[0])*sm/6, p2[1] - (p3[1]-p1[1])*sm/6], p2]);
+  }
+  return segs;
+}
+function splinePath(p, P, sm){
+  p.moveTo(P[0][0], P[0][1]);
+  for (const [, c1, c2, e] of splineSegs(P, sm)) p.bezierCurveTo(c1[0], c1[1], c2[0], c2[1], e[0], e[1]);
+  p.closePath();
+}
+/* redistribui os pontos ao longo da curva atual, preservando o desenho */
+function resampleCustom(P, n, sm){
+  const S = 48, pts = [];
+  for (const [a, b, c, d] of splineSegs(P, sm)){
+    for (let j = 0; j < S; j++){
+      const t = j/S, u = 1 - t;
+      pts.push([0,1].map(k => u*u*u*a[k] + 3*u*u*t*b[k] + 3*u*t*t*c[k] + t*t*t*d[k]));
+    }
+  }
+  pts.push(pts[0]);
+  const L = [0];
+  for (let i = 1; i < pts.length; i++) L.push(L[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+  const total = L[L.length-1] || 1, out = [];
+  let k = 0;
+  for (let q = 0; q < n; q++){
+    const tg = q * total / n;
+    while (k < pts.length - 2 && L[k+1] < tg) k++;
+    const f = (tg - L[k]) / ((L[k+1] - L[k]) || 1);
+    out.push([pts[k][0] + (pts[k+1][0]-pts[k][0])*f, pts[k][1] + (pts[k+1][1]-pts[k][1])*f]);
+  }
+  return out;
+}
 
 function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
   t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -430,9 +484,21 @@ function shapePath(s, b){
     case 'star': polyPath(p, fit(starPts(sp.spikes, sp.inner/100, sp.prot), b, sp.uniform), sp.corner/100 * mn/2); break;
     case 'heart': polyPath(p, fit(heartPts(), b, sp.uniform), 0); break;
     case 'flower': polyPath(p, fit(flowerPts(sp.waves, sp.depth/100), b, sp.uniform), 0); break;
+    case 'custom': splinePath(p, s.custom.map(([u, v]) => [b.x + u*b.w, b.y + v*b.h]), sp.smooth/100); break;
     default: p.rect(b.x, b.y, b.w, b.h);
   }
   return p;
+}
+/* rotação, escala e deslocamento da borda em torno do centro do quadro */
+function shapeMatrix(s, b){
+  const cx = b.x + b.w/2, cy = b.y + b.h/2, k = s.shSize/100;
+  return new DOMMatrix().translate(cx + s.bx/100*b.w, cy + s.by/100*b.h).rotate(s.shRot)
+    .scale(k * s.shW/100, k * s.shH/100).translate(-cx, -cy);
+}
+function finalPath(s, b){
+  const base = shapePath(s, b);
+  if (!s.shRot && s.shSize === 100 && s.shW === 100 && s.shH === 100 && !s.bx && !s.by) return base;
+  const p = new Path2D(); p.addPath(base, shapeMatrix(s, b)); return p;
 }
 
 /* ---------- renderização ---------- */
@@ -523,7 +589,7 @@ function render(ctx, W, H, im, s, info){
   const box = {x:pad, y:pad, w:W - 2*pad, h:H - 2*pad};
   if (info) info.box = box;
   if (box.w < 2 || box.h < 2) return;
-  const path = shapePath(s, box);
+  const path = finalPath(s, box);
 
   // 1) foto recortada pelo formato
   const [P, px] = buf('P', W, H);
@@ -582,11 +648,52 @@ function draw(){
   const info = {};
   render(vctx, pw, ph, img, st, info);
   if (info.box) lastBox = info.box;
+  if (editing()) drawHandles();
   const [ow, oh] = outSize(img, st);
   $('#dimsBar').textContent = `${ow} × ${oh} px`;
   $('#dimsOut').textContent = `Saída: ${ow} × ${oh} px · ${st.fmt.toUpperCase()}`;
 }
 new ResizeObserver(schedule).observe(wrap);
+
+/* ---------- pontos de controle do formato livre ---------- */
+let ACCENT = '#e8590c', dragPt = null, hoverPt = -1;
+const editing = () => !!img && st.shape === 'custom' && st.sp.showPts;
+function evPt(e){ const r = view.getBoundingClientRect(), k = view.width / r.width;
+  return [(e.clientX - r.left) * k, (e.clientY - r.top) * view.height / r.height, k]; }
+function handlePos(){
+  const M = shapeMatrix(st, lastBox), b = lastBox;
+  return st.custom.map(([u, v]) => { const q = M.transformPoint({x: b.x + u*b.w, y: b.y + v*b.h}); return [q.x, q.y]; });
+}
+function toUV(x, y){
+  const q = shapeMatrix(st, lastBox).inverse().transformPoint({x, y}), b = lastBox;
+  return [clamp((q.x - b.x)/b.w, -0.3, 1.3), clamp((q.y - b.y)/b.h, -0.3, 1.3)];
+}
+function hitPt(e){
+  const [x, y, k] = evPt(e); let best = -1, bd = (14*k) ** 2;
+  handlePos().forEach(([hx, hy], i) => { const d = (hx-x)**2 + (hy-y)**2; if (d < bd){ bd = d; best = i; } });
+  return best;
+}
+function distSeg(x, y, a, b){
+  const dx = b[0]-a[0], dy = b[1]-a[1], l = dx*dx + dy*dy || 1;
+  const t = clamp(((x-a[0])*dx + (y-a[1])*dy) / l, 0, 1);
+  return Math.hypot(x - a[0] - t*dx, y - a[1] - t*dy);
+}
+function drawHandles(){
+  const H = handlePos(), k = view.width / (view.getBoundingClientRect().width || 1), x = vctx;
+  x.save();
+  x.beginPath(); H.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b)); x.closePath();
+  x.lineWidth = 3*k; x.strokeStyle = 'rgba(0,0,0,.35)'; x.stroke();
+  x.setLineDash([5*k, 4*k]); x.lineWidth = 1.2*k; x.strokeStyle = 'rgba(255,255,255,.9)'; x.stroke();
+  x.setLineDash([]);
+  H.forEach(([a, b], i) => {
+    const on = dragPt && dragPt.i === i, hv = i === hoverPt;
+    x.beginPath(); x.arc(a, b, (on || hv ? 8 : 6)*k, 0, Math.PI*2);
+    x.fillStyle = on ? ACCENT : '#fff'; x.fill();
+    x.lineWidth = 2.5*k; x.strokeStyle = on ? '#fff' : ACCENT; x.stroke();
+  });
+  x.restore();
+}
+function afterCustom(){ shapeSyncers.forEach(f => f()); drawIcons(); changed(); }
 
 /* ---------- UI: sliders e binds ---------- */
 let syncers = [], shapeSyncers = [];
@@ -656,7 +763,7 @@ SHAPES.forEach(s => {
   shapesEl.appendChild(b);
 });
 function drawIcons(){
-  const col = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#e8590c';
+  const col = ACCENT = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#e8590c';
   $$('.shape').forEach(b => {
     const c = b.querySelector('canvas'), x = c.getContext('2d'), d = c.width, id = b.dataset.shape;
     x.clearRect(0, 0, d, d);
@@ -667,6 +774,20 @@ function drawIcons(){
 function buildShapeParams(){
   const host = $('#shapeParams'); host.innerHTML = ''; shapeSyncers = [];
   const def = SHAPES.find(s => s.id === st.shape) || SHAPES[0];
+  if (def.custom){
+    const w = document.createElement('div'); w.className = 'ctl';
+    w.innerHTML = '<div class="ctl-top"><span>Pontos de controle</span><output></output></div><input type="range" min="3" max="32" step="1" aria-label="Pontos de controle">';
+    const inp = w.querySelector('input'), out = w.querySelector('output');
+    let base = null;
+    const upd = () => { inp.value = st.custom.length; out.textContent = st.custom.length; };
+    inp.addEventListener('input', () => {
+      if (!base) base = clone(st.custom);
+      st.custom = resampleCustom(base, +inp.value, st.sp.smooth/100);
+      out.textContent = inp.value; drawIcons(); changed();
+    });
+    inp.addEventListener('change', () => { base = null; });
+    shapeSyncers.push(upd); upd(); host.appendChild(w);
+  }
   for (const p of def.p){
     if (p[2] === 'check') checkbox(host, 'sp.' + p[0], p[1], shapeSyncers, drawIcons);
     else slider(host, 'sp.' + p[0], p[1], p[2], p[3], p[4], p[5], shapeSyncers, drawIcons);
@@ -675,6 +796,16 @@ function buildShapeParams(){
     const b = document.createElement('button'); b.className = 'btn small'; b.textContent = '↻ Gerar outra forma';
     b.addEventListener('click', () => { st.seed = Math.floor(Math.random() * 1e6); drawIcons(); changed(); });
     host.appendChild(b);
+  }
+  if (def.custom){
+    const h = document.createElement('p'); h.className = 'hint';
+    h.textContent = 'Arraste os pontos na prévia. Duplo clique perto da linha tracejada adiciona um ponto; duplo clique num ponto o remove.';
+    const r = document.createElement('div'); r.className = 'row';
+    const b1 = document.createElement('button'); b1.className = 'btn small'; b1.textContent = '○ Voltar ao círculo';
+    b1.addEventListener('click', () => { st.custom = defaultCustom(st.custom.length); afterCustom(); });
+    const b2 = document.createElement('button'); b2.className = 'btn small'; b2.textContent = '⇋ Espelhar pontos';
+    b2.addEventListener('click', () => { st.custom = st.custom.map(([u, v]) => [1 - u, v]).reverse(); afterCustom(); });
+    r.append(b1, b2); host.append(r, h);
   }
   if (!def.p.length && !def.seed){ const h = document.createElement('p'); h.className = 'hint'; h.textContent = 'Este formato não tem ajustes extras.'; host.appendChild(h); }
 }
@@ -749,9 +880,20 @@ function startGesture(){
 }
 view.addEventListener('pointerdown', e => {
   if (!img) return; view.setPointerCapture(e.pointerId);
+  if (editing() && !ptrs.size && !dragPt){
+    const i = hitPt(e);
+    if (i >= 0){ dragPt = {i, id:e.pointerId}; view.classList.add('dragging'); schedule(); return; }
+  }
   ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY}); startGesture(); view.classList.add('dragging');
 });
 view.addEventListener('pointermove', e => {
+  if (dragPt && dragPt.id === e.pointerId){
+    const [x, y] = evPt(e); st.custom[dragPt.i] = toUV(x, y); drawIcons(); schedule(); return;
+  }
+  if (!ptrs.size && editing()){
+    const h = hitPt(e); view.style.cursor = h >= 0 ? 'move' : '';
+    if (h !== hoverPt){ hoverPt = h; schedule(); }
+  }
   if (!ptrs.has(e.pointerId) || !gst) return;
   ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
   const pts = [...ptrs.values()], c = centroid(pts), r = view.getBoundingClientRect();
@@ -760,14 +902,31 @@ view.addEventListener('pointermove', e => {
   if (pts.length > 1 && gst.dist > 0) st.zoom = clamp(gst.zoom * Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) / gst.dist, 20, 800);
   syncers.forEach(f => f()); schedule();
 });
-const endPtr = e => { ptrs.delete(e.pointerId); if (ptrs.size) startGesture(); else { gst = null; view.classList.remove('dragging'); changed(); } };
+const endPtr = e => {
+  if (dragPt && dragPt.id === e.pointerId){ dragPt = null; view.classList.remove('dragging'); afterCustom(); return; }
+  ptrs.delete(e.pointerId); if (ptrs.size) startGesture(); else { gst = null; view.classList.remove('dragging'); changed(); } };
 view.addEventListener('pointerup', endPtr); view.addEventListener('pointercancel', endPtr);
 view.addEventListener('wheel', e => {
   if (!img) return; e.preventDefault();
   st.zoom = clamp(st.zoom * Math.exp(-e.deltaY * 0.0015), 20, 800);
   syncers.forEach(f => f()); changed();
 }, {passive:false});
-view.addEventListener('dblclick', () => { st.ox = 0; st.oy = 0; st.zoom = 100; st.angle = 0; sync(); changed(); });
+view.addEventListener('dblclick', e => {
+  if (editing()){
+    const i = hitPt(e);
+    if (i >= 0){
+      if (st.custom.length > 3){ st.custom.splice(i, 1); hoverPt = -1; afterCustom(); } else toast('O formato precisa de pelo menos 3 pontos');
+      return;
+    }
+    const [x, y, k] = evPt(e), H = handlePos(), n = H.length;
+    let best = -1, bd = Infinity;
+    for (let j = 0; j < n; j++){ const d = distSeg(x, y, H[j], H[(j+1)%n]); if (d < bd){ bd = d; best = j; } }
+    if (bd < 30*k){
+      if (st.custom.length >= 32){ toast('Máximo de 32 pontos'); return; }
+      st.custom.splice(best + 1, 0, toUV(x, y)); afterCustom(); return;
+    }
+  }
+  st.ox = 0; st.oy = 0; st.zoom = 100; st.angle = 0; sync(); changed(); });
 
 /* ---------- exportação ---------- */
 function exportBlob(im, s){
@@ -828,6 +987,7 @@ document.addEventListener('click', e => {
     case 'flipH': st.flipH = !st.flipH; changed(); break;
     case 'flipV': st.flipV = !st.flipV; changed(); break;
     case 'center': st.ox = 0; st.oy = 0; st.zoom = 100; st.angle = 0; sync(); changed(); break;
+    case 'resetShapeTf': ['shRot','shSize','shW','shH','bx','by'].forEach(k => st[k] = DEF[k]); sync(); changed(); break;
     case 'resetAdj': ADJ_KEYS.forEach(k => st[k] = DEF[k]); sync(); changed(); break;
     case 'resetAll': {
       const keep = {}; PHOTO_KEYS.forEach(k => keep[k] = st[k]);
